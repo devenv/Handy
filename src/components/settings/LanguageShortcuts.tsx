@@ -137,13 +137,15 @@ const LanguageShortcutRow: React.FC<RowProps> = ({
         </div>
       )}
       <Dropdown
-        className="min-w-36"
+        className="w-[130px]"
+        minWidthClass="min-w-0"
         options={languageOptions}
         selectedValue={language}
         onSelect={(value) => saveProfile(value, model)}
       />
       <Dropdown
-        className="min-w-44"
+        className="w-[170px]"
+        minWidthClass="min-w-0"
         options={modelOptions}
         selectedValue={model}
         onSelect={(value) => {
