@@ -190,7 +190,6 @@ Without these tools, Handy falls back to enigo which may have limited compatibil
 **Other Notes:**
 
 - **Runtime library dependency (`libgtk-layer-shell.so.0`)**:
-
   - Handy links `gtk-layer-shell` on Linux. If startup fails with `error while loading shared libraries: libgtk-layer-shell.so.0`, install the runtime package for your distro:
 
     | Distro        | Package to install    | Example command                        |
@@ -207,7 +206,6 @@ Without these tools, Handy falls back to enigo which may have limited compatibil
 - **Global keyboard shortcuts (Wayland):** On Wayland, system-level shortcuts must be configured through your desktop environment or window manager. Use the [CLI flags](#cli-parameters) as the command for your custom shortcut.
 
   **GNOME:**
-
   1. Open **Settings > Keyboard > Keyboard Shortcuts > Custom Shortcuts**
   2. Click the **+** button to add a new shortcut
   3. Set the **Name** to `Toggle Handy Transcription`
@@ -215,7 +213,6 @@ Without these tools, Handy falls back to enigo which may have limited compatibil
   5. Click **Set Shortcut** and press your desired key combination (e.g., `Super+O`)
 
   **KDE Plasma:**
-
   1. Open **System Settings > Shortcuts > Custom Shortcuts**
   2. Click **Edit > New > Global Shortcut > Command/URL**
   3. Name it `Toggle Handy Transcription`
