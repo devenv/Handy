@@ -1,6 +1,6 @@
 use crate::audio_toolkit::chunking;
 use crate::audio_toolkit::{
-    apply_custom_words, detect_output_language, normalize_transcription_output,
+    apply_custom_words, detect_output_language, finish_sentence, normalize_transcription_output,
     remove_filler_words, OutputLanguageEvidence,
 };
 use crate::chinese_script::{convert_chinese_script, ChineseVariety};
@@ -33,7 +33,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
-use transcribe_cpp::{Backend, RunOptions, Task, Transcript};
+use transcribe_cpp::{Backend, Pnc, RunOptions, Task, Transcript};
 
 mod chunked;
 mod dictation_override;
@@ -1428,6 +1428,7 @@ fn run_setup(info: &LoadedInfo, settings: &AppSettings, language: LanguageDecisi
         language: run_plan.language,
         target_language: run_plan.target_language,
         vocabulary: vocabulary_for_model(info.supports_vocabulary, &settings.custom_words),
+        pnc: pnc_for_model(info.supports_pnc, settings.auto_format),
         ..Default::default()
     };
 
@@ -1660,6 +1661,16 @@ fn with_model_detected_language(
     }
 }
 
+/// Auto-format turns on the model's own punctuation and capitalization when
+/// it has a runtime toggle; otherwise the model keeps its default.
+fn pnc_for_model(supports_pnc: bool, auto_format: bool) -> Pnc {
+    if supports_pnc && auto_format {
+        Pnc::On
+    } else {
+        Pnc::Default
+    }
+}
+
 /// Custom words for transcribe-cpp's `vocabulary` slot, in priority order.
 /// Empty for models without Feature::Vocabulary, which would warn on every run
 /// and rely on fuzzy correction instead.
@@ -1767,7 +1778,12 @@ fn post_process_transcription_text(
             settings.filler_word_removal_enabled,
         );
 
-        normalize_transcription_output(&without_fillers)
+        let normalized = normalize_transcription_output(&without_fillers);
+        if settings.auto_format {
+            finish_sentence(&normalized)
+        } else {
+            normalized
+        }
     })
 }
 
@@ -2120,6 +2136,7 @@ mod tests {
     fn non_chinese_output_is_never_converted() {
         let settings = AppSettings {
             chinese_script: ChineseScript::TraditionalTw,
+            auto_format: false,
             ..Default::default()
         };
         for evidence in [
@@ -2162,6 +2179,7 @@ mod tests {
         let settings = AppSettings {
             app_language: "en".to_string(),
             selected_language: "pt-BR".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let supported = languages(&["en", "pt"]);
@@ -2208,6 +2226,7 @@ mod tests {
     fn auto_language_without_detection_skips_gated_filler_removal() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let evidence = resolve_output_language_evidence(
@@ -2236,6 +2255,7 @@ mod tests {
     fn unknown_evidence_with_confident_text_detection_removes_gated_fillers() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
 
@@ -2258,6 +2278,7 @@ mod tests {
     fn unknown_evidence_with_portuguese_text_preserves_um() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
 
@@ -2341,6 +2362,7 @@ mod tests {
             // Parakeet V3 ignores language hints and auto-detects even when a
             // selection from the previously active model remains persisted.
             selected_language: "en".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let supported = languages(&["en", "de", "pt"]);
@@ -2430,6 +2452,7 @@ mod tests {
         let settings = AppSettings {
             selected_language: "en".to_string(),
             custom_words: vec!["Handy".to_string()],
+            auto_format: false,
             ..Default::default()
         };
         let evidence = OutputLanguageEvidence::UserSelected("en".to_string());
@@ -2454,6 +2477,38 @@ mod tests {
             &supported,
         );
         assert_eq!(corrected, "i use Handy every day");
+    }
+
+    /// Auto-format (on by default) finishes the final text as a sentence;
+    /// switched off, the text is left as transcribed.
+    #[test]
+    fn auto_format_finishes_the_final_text() {
+        let evidence = OutputLanguageEvidence::UserSelected("en".to_string());
+        let supported = languages(&["en"]);
+        let raw = "so we ship it on thursday".to_string();
+
+        let on = AppSettings::default();
+        assert!(on.auto_format);
+        assert_eq!(
+            post_process_transcription_text(raw.clone(), &on, false, &evidence, &supported),
+            "So we ship it on thursday."
+        );
+
+        let off = AppSettings {
+            auto_format: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            post_process_transcription_text(raw.clone(), &off, false, &evidence, &supported),
+            raw
+        );
+    }
+
+    #[test]
+    fn model_punctuation_is_turned_on_only_where_supported() {
+        assert_eq!(pnc_for_model(true, true), Pnc::On);
+        assert_eq!(pnc_for_model(false, true), Pnc::Default);
+        assert_eq!(pnc_for_model(true, false), Pnc::Default);
     }
 }
 

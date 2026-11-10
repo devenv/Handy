@@ -1521,6 +1521,27 @@ pub async fn change_vad_backend_setting(app: AppHandle, backend: VadBackend) -> 
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_auto_format_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.auto_format = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_post_process_every_shortcut_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.post_process_every_shortcut = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_filler_word_removal_enabled_setting(
     app: AppHandle,
     enabled: bool,

@@ -2,6 +2,7 @@ pub mod audio;
 pub mod chunking;
 pub mod constants;
 pub(crate) mod cpu_engine;
+pub mod dictation_format;
 pub mod lang_id;
 pub mod text;
 pub mod utils;
@@ -11,6 +12,7 @@ pub use audio::{
     decode_audio_file, list_output_devices, read_wav_samples, save_wav_file, verify_wav_file,
     CaptureSink, CaptureVad, VadPolicy,
 };
+pub use dictation_format::{finish_sentence, is_faithful_reformat};
 pub use lang_id::detect_output_language;
 pub use text::{
     apply_custom_words, normalize_transcription_output, remove_filler_words, OutputLanguageEvidence,

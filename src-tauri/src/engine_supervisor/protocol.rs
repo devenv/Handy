@@ -157,6 +157,9 @@ pub struct LoadedInfo {
     /// run (whisper today); other models' long audio is chunked by Handy.
     pub supports_long_form: bool,
     pub supports_vocabulary: bool,
+    /// Whether the model takes a runtime punctuation + capitalization toggle.
+    #[serde(default)]
+    pub supports_pnc: bool,
 }
 
 /// Encode one frame. Refuses a section the reader would refuse, so an

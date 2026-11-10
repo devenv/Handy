@@ -624,6 +624,10 @@
           "earshot": "Earshot"
         }
       },
+      "autoFormat": {
+        "title": "Auto-format",
+        "description": "End every transcription with punctuation and start it with a capital letter, and turn on the model's own punctuation where it supports it."
+      },
       "fillerWordRemoval": {
         "title": "군더더기 표현 제거",
         "description": "전사에서 흔한 머뭇거림 표현을 제거합니다. 그대로 두려면 이 옵션을 끄세요."
@@ -642,6 +646,10 @@
     "postProcessing": {
       "hotkey": {
         "title": "단축키"
+      },
+      "everyShortcut": {
+        "title": "Use for every shortcut",
+        "description": "Run the selected prompt after every transcribe shortcut, not only this one. With the built-in \"Format Dictation (lists)\" prompt and a local model, spoken lists become bulleted lines, and a reply that changes your words is ignored."
       },
       "api": {
         "title": "API",

@@ -624,6 +624,10 @@
           "earshot": "Earshot"
         }
       },
+      "autoFormat": {
+        "title": "Auto-format",
+        "description": "End every transcription with punctuation and start it with a capital letter, and turn on the model's own punctuation where it supports it."
+      },
       "fillerWordRemoval": {
         "title": "Füllwörter entfernen",
         "description": "Entfernt häufige Verzögerungslaute aus Transkriptionen. Deaktivieren Sie diese Option, um sie beizubehalten."
@@ -642,6 +646,10 @@
     "postProcessing": {
       "hotkey": {
         "title": "Tastenkürzel"
+      },
+      "everyShortcut": {
+        "title": "Use for every shortcut",
+        "description": "Run the selected prompt after every transcribe shortcut, not only this one. With the built-in \"Format Dictation (lists)\" prompt and a local model, spoken lists become bulleted lines, and a reply that changes your words is ignored."
       },
       "api": {
         "title": "API",

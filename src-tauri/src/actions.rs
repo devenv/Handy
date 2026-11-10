@@ -431,6 +431,20 @@ pub(crate) struct ProcessedTranscription {
     pub post_process_failed: bool,
 }
 
+/// Whether a transcribe shortcut post-processes: the dedicated shortcut
+/// always does; every other one when "every shortcut" is on.
+pub(crate) fn shortcut_post_processes(dedicated: bool, settings: &AppSettings) -> bool {
+    dedicated || (settings.post_process_enabled && settings.post_process_every_shortcut)
+}
+
+/// The built-in format-only prompt must keep the dictated words; any other
+/// prompt may rewrite freely.
+fn keeps_dictated_words(settings: &AppSettings, dictated: &str, reply: &str) -> bool {
+    let format_only = settings.post_process_selected_prompt_id.as_deref()
+        == Some(crate::settings::FORMAT_PROMPT_ID);
+    !format_only || crate::audio_toolkit::is_faithful_reformat(dictated, reply)
+}
+
 pub(crate) async fn process_transcription_output(
     app: &AppHandle,
     transcription: &str,
@@ -452,6 +466,13 @@ pub(crate) async fn process_transcription_output(
         match outcome {
             PostProcessOutcome::Skipped => {}
             PostProcessOutcome::Failed => post_process_failed = true,
+            PostProcessOutcome::Done(processed_text)
+                if !keeps_dictated_words(&settings, &final_text, &processed_text) =>
+            {
+                // A format-only prompt that translated, answered or rewrote:
+                // keep the dictated text rather than paste that.
+                warn!("Format-only post-processing changed the dictated words; keeping the transcript");
+            }
             PostProcessOutcome::Done(processed_text) => {
                 post_processed_text = Some(processed_text.clone());
                 final_text = processed_text;
@@ -703,7 +724,7 @@ impl ShortcutAction for TranscribeAction {
         play_feedback_sound(app, SoundType::Stop);
 
         let binding_id = binding_id.to_string(); // Clone binding_id for the async task
-        let post_process = self.post_process;
+        let post_process = shortcut_post_processes(self.post_process, &get_settings(app));
         let cancel_generation = rm.cancel_generation();
 
         tauri::async_runtime::spawn(async move {
@@ -1178,6 +1199,42 @@ mod tests {
             run_post_process(&post_process_settings(&url), "hello"),
             PostProcessOutcome::Failed
         );
+    }
+
+    #[test]
+    fn every_shortcut_post_processes_only_when_both_switches_are_on() {
+        let mut settings = AppSettings::default();
+        assert!(super::shortcut_post_processes(true, &settings));
+        assert!(!super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_every_shortcut = true;
+        assert!(!super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_enabled = true;
+        assert!(super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_every_shortcut = false;
+        assert!(!super::shortcut_post_processes(false, &settings));
+    }
+
+    #[test]
+    fn only_the_format_prompt_must_keep_the_dictated_words() {
+        let ru = "Мне нужно три вещи. Первый – обновить документацию.";
+        let translated = "I need three things. First - update the documentation.";
+
+        let mut settings = AppSettings::default();
+        settings.post_process_selected_prompt_id =
+            Some(crate::settings::FORMAT_PROMPT_ID.to_string());
+        assert!(!super::keeps_dictated_words(&settings, ru, translated));
+        assert!(super::keeps_dictated_words(
+            &settings,
+            ru,
+            "Мне нужно три вещи:\n- обновить документацию"
+        ));
+
+        // A user prompt may rewrite (e.g. translate) on purpose.
+        settings.post_process_selected_prompt_id = Some("my_translate_prompt".to_string());
+        assert!(super::keeps_dictated_words(&settings, ru, translated));
     }
 
     #[test]
