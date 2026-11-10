@@ -684,6 +684,9 @@ pub fn run(cli_args: CliArgs) {
         .commands(collect_commands![
             shortcut::change_binding,
             shortcut::reset_binding,
+            shortcut::add_transcribe_shortcut,
+            shortcut::change_transcribe_shortcut_profile,
+            shortcut::remove_transcribe_shortcut,
             shortcut::change_shortcut_activation_setting,
             shortcut::change_hold_threshold_ms_setting,
             shortcut::change_audio_feedback_setting,
@@ -734,6 +737,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_long_form_chunking_setting,
             shortcut::change_vad_backend_setting,
             shortcut::change_filler_word_removal_enabled_setting,
+            shortcut::change_auto_format_setting,
+            shortcut::change_post_process_every_shortcut_setting,
             shortcut::change_chinese_script_setting,
             shortcut::change_app_language_setting,
             shortcut::change_update_checks_setting,

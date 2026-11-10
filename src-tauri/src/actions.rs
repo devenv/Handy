@@ -7,7 +7,7 @@ use crate::managers::history::HistoryManager;
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::policy::{live_decode, LiveDecode, ModelTraits};
 use crate::managers::transcription::StreamWorkKind;
-use crate::managers::transcription::{Transcription, TranscriptionManager};
+use crate::managers::transcription::{RecordingOverride, Transcription, TranscriptionManager};
 use crate::notices::{self, Notice, NoticeCode, NoticeSource};
 use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
@@ -87,6 +87,9 @@ static RECORDING_SESSION: AtomicU64 = AtomicU64::new(0);
 struct FinishGuard(AppHandle, Arc<TranscriptionManager>);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        // The dictation is over: later transcriptions (history, files) use
+        // the saved language and model again.
+        self.1.set_recording_override(None);
         self.1.maybe_unload_immediately("transcription session");
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
             c.notify_processing_finished();
@@ -428,6 +431,20 @@ pub(crate) struct ProcessedTranscription {
     pub post_process_failed: bool,
 }
 
+/// Whether a transcribe shortcut post-processes: the dedicated shortcut
+/// always does; every other one when "every shortcut" is on.
+pub(crate) fn shortcut_post_processes(dedicated: bool, settings: &AppSettings) -> bool {
+    dedicated || (settings.post_process_enabled && settings.post_process_every_shortcut)
+}
+
+/// The built-in format-only prompt must keep the dictated words; any other
+/// prompt may rewrite freely.
+fn keeps_dictated_words(settings: &AppSettings, dictated: &str, reply: &str) -> bool {
+    let format_only = settings.post_process_selected_prompt_id.as_deref()
+        == Some(crate::settings::FORMAT_PROMPT_ID);
+    !format_only || crate::audio_toolkit::is_faithful_reformat(dictated, reply)
+}
+
 pub(crate) async fn process_transcription_output(
     app: &AppHandle,
     transcription: &str,
@@ -449,6 +466,13 @@ pub(crate) async fn process_transcription_output(
         match outcome {
             PostProcessOutcome::Skipped => {}
             PostProcessOutcome::Failed => post_process_failed = true,
+            PostProcessOutcome::Done(processed_text)
+                if !keeps_dictated_words(&settings, &final_text, &processed_text) =>
+            {
+                // A format-only prompt that translated, answered or rewrote:
+                // keep the dictated text rather than paste that.
+                warn!("Format-only post-processing changed the dictated words; keeping the transcript");
+            }
             PostProcessOutcome::Done(processed_text) => {
                 post_processed_text = Some(processed_text.clone());
                 final_text = processed_text;
@@ -483,9 +507,17 @@ impl ShortcutAction for TranscribeAction {
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
 
+        // This shortcut's own language and model (if any) apply to this
+        // recording only; the saved selection is never changed.
+        tm.set_recording_override(RecordingOverride::for_binding(
+            &get_settings(app),
+            binding_id,
+        ));
+        let wanted_model = tm.effective_settings().selected_model;
+
         // Load ASR model and VAD model in parallel
         let kickoff_started = Instant::now();
-        let load_started = tm.initiate_model_load(true);
+        let load_started = tm.initiate_model_load_for(&wanted_model, true);
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -496,16 +528,16 @@ impl ShortcutAction for TranscribeAction {
 
         // Don't open the mic if nothing can transcribe the recording. A load
         // started above reports its own failure; one already running doesn't.
-        if !tm.is_model_loaded() {
-            let selected_model = get_settings(app).selected_model;
+        if !tm.is_model_loaded() || load_started {
             if let Err(e) = app
                 .state::<Arc<ModelManager>>()
-                .get_model_path(&selected_model)
+                .get_model_path(&wanted_model)
             {
                 warn!("Not starting recording: no model can transcribe it ({})", e);
                 if !load_started {
-                    tm.raise_model_load_failed(&selected_model, &e);
+                    tm.raise_model_load_failed(&wanted_model, &e);
                 }
+                tm.set_recording_override(None);
                 return;
             }
         }
@@ -518,7 +550,7 @@ impl ShortcutAction for TranscribeAction {
 
         // Get the microphone mode to determine audio feedback timing
         let plan_started = Instant::now();
-        let settings = get_settings(app);
+        let settings = tm.effective_settings();
         let is_always_on = settings.always_on_microphone;
 
         let selected_model_info = app
@@ -635,6 +667,7 @@ impl ShortcutAction for TranscribeAction {
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
+            tm.set_recording_override(None);
             tm.cancel_stream();
             set_tray_state(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
@@ -691,7 +724,7 @@ impl ShortcutAction for TranscribeAction {
         play_feedback_sound(app, SoundType::Stop);
 
         let binding_id = binding_id.to_string(); // Clone binding_id for the async task
-        let post_process = self.post_process;
+        let post_process = shortcut_post_processes(self.post_process, &get_settings(app));
         let cancel_generation = rm.cancel_generation();
 
         tauri::async_runtime::spawn(async move {
@@ -1067,6 +1100,16 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     map
 });
 
+/// The action a binding runs: its own entry, or for a user-added transcribe
+/// shortcut the plain transcribe action (its language and model are applied
+/// per recording from the binding itself).
+pub fn action_for_binding(binding_id: &str) -> Option<Arc<dyn ShortcutAction>> {
+    if crate::settings::is_custom_transcribe_binding(binding_id) {
+        return ACTION_MAP.get("transcribe").cloned();
+    }
+    ACTION_MAP.get(binding_id).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1156,6 +1199,42 @@ mod tests {
             run_post_process(&post_process_settings(&url), "hello"),
             PostProcessOutcome::Failed
         );
+    }
+
+    #[test]
+    fn every_shortcut_post_processes_only_when_both_switches_are_on() {
+        let mut settings = AppSettings::default();
+        assert!(super::shortcut_post_processes(true, &settings));
+        assert!(!super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_every_shortcut = true;
+        assert!(!super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_enabled = true;
+        assert!(super::shortcut_post_processes(false, &settings));
+
+        settings.post_process_every_shortcut = false;
+        assert!(!super::shortcut_post_processes(false, &settings));
+    }
+
+    #[test]
+    fn only_the_format_prompt_must_keep_the_dictated_words() {
+        let ru = "Мне нужно три вещи. Первый – обновить документацию.";
+        let translated = "I need three things. First - update the documentation.";
+
+        let mut settings = AppSettings::default();
+        settings.post_process_selected_prompt_id =
+            Some(crate::settings::FORMAT_PROMPT_ID.to_string());
+        assert!(!super::keeps_dictated_words(&settings, ru, translated));
+        assert!(super::keeps_dictated_words(
+            &settings,
+            ru,
+            "Мне нужно три вещи:\n- обновить документацию"
+        ));
+
+        // A user prompt may rewrite (e.g. translate) on purpose.
+        settings.post_process_selected_prompt_id = Some("my_translate_prompt".to_string());
+        assert!(super::keeps_dictated_words(&settings, ru, translated));
     }
 
     #[test]

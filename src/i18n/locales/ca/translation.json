@@ -354,6 +354,18 @@
           "set": "No s'ha pogut definir la drecera: {{error}}"
         }
       },
+      "languageShortcuts": {
+        "title": "Language Shortcuts",
+        "description": "Extra transcribe shortcuts, each with its own language and model. They apply to that recording only and never change your Language or Model settings. Switching to a different model loads it on the key press.",
+        "add": "Add shortcut",
+        "remove": "Remove shortcut",
+        "recordKey": "Click to record a key",
+        "noKey": "Set key",
+        "sameLanguage": "Language setting",
+        "sameModel": "Selected model",
+        "unsupported": "{{language}} (not supported by this model)",
+        "notDownloaded": "{{model}} (not downloaded)"
+      },
       "language": {
         "title": "Llengua",
         "description": "Seleccioneu la llengua per al reconeixement de la parla. L'opció automàtica detecta la llengua, mentre que seleccionar-ne una d'específica pot millorar-ne la precisió.",
@@ -612,6 +624,10 @@
           "earshot": "Earshot"
         }
       },
+      "autoFormat": {
+        "title": "Auto-format",
+        "description": "End every transcription with punctuation and start it with a capital letter, and turn on the model's own punctuation where it supports it."
+      },
       "fillerWordRemoval": {
         "title": "Elimina les falques",
         "description": "Elimina les expressions de vacil·lació habituals de les transcripcions. Desactiveu aquesta opció per conservar-les."
@@ -630,6 +646,10 @@
     "postProcessing": {
       "hotkey": {
         "title": "Drecera de teclat"
+      },
+      "everyShortcut": {
+        "title": "Use for every shortcut",
+        "description": "Run the selected prompt after every transcribe shortcut, not only this one. With the built-in \"Format Dictation (lists)\" prompt and a local model, spoken lists become bulleted lines, and a reply that changes your words is ignored."
       },
       "api": {
         "title": "API",

@@ -4,6 +4,12 @@
 
 **A free, open source, and extensible speech-to-text application that works completely offline.**
 
+> **This fork adds per-language transcribe shortcuts** (Settings > General > Language Shortcuts): each one has its own key, language and model.
+>
+> ![Language Shortcuts in Settings](docs/language-shortcuts.png)
+>
+> _fn dictates in English; Right Shift dictates in Russian on Whisper._
+
 Handy is a cross-platform desktop application that provides simple, privacy-focused speech transcription. Press a shortcut, speak, and have your words appear in any text field. This happens on your own computer without sending any information to the cloud.
 
 ## Why Handy?

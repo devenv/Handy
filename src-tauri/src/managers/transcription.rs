@@ -1,6 +1,6 @@
 use crate::audio_toolkit::chunking;
 use crate::audio_toolkit::{
-    apply_custom_words, detect_output_language, normalize_transcription_output,
+    apply_custom_words, detect_output_language, finish_sentence, normalize_transcription_output,
     remove_filler_words, OutputLanguageEvidence,
 };
 use crate::chinese_script::{convert_chinese_script, ChineseVariety};
@@ -33,13 +33,15 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
-use transcribe_cpp::{Backend, RunOptions, Task, Transcript};
+use transcribe_cpp::{Backend, Pnc, RunOptions, Task, Transcript};
 
 mod chunked;
+mod dictation_override;
 mod job;
 mod live;
 pub mod policy;
 
+pub use dictation_override::RecordingOverride;
 pub use job::ChunkControl;
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
@@ -278,6 +280,9 @@ pub struct TranscriptionManager {
     /// Handy's spoken-language detector, loaded in this process on first
     /// use and unloaded with the model.
     language_detector: Arc<LanguageDetector>,
+    /// The language and model of the dictation in progress, from the
+    /// shortcut that started it; `None` follows the saved settings.
+    recording_override: Arc<Mutex<Option<RecordingOverride>>>,
 }
 
 impl TranscriptionManager {
@@ -299,6 +304,7 @@ impl TranscriptionManager {
             active_stream_worker: Arc::new(AtomicU64::new(0)),
             job_active: Arc::new(AtomicBool::new(false)),
             language_detector: Arc::new(LanguageDetector::default()),
+            recording_override: Arc::new(Mutex::new(None)),
         };
 
         // Start the idle watcher
@@ -694,29 +700,54 @@ impl TranscriptionManager {
     /// loading, and returns whether it did. Only a dictation sets
     /// `raise_notice`: file jobs and Settings report their own failures.
     pub fn initiate_model_load(&self, raise_notice: bool) -> bool {
+        self.start_model_load(None, raise_notice)
+    }
+
+    /// Like [`initiate_model_load`](Self::initiate_model_load), for a
+    /// dictation that wants `model_id` in particular: a different model that
+    /// is loaded is swapped out, unless a file job holds it.
+    pub fn initiate_model_load_for(&self, model_id: &str, raise_notice: bool) -> bool {
+        self.start_model_load(Some(model_id), raise_notice)
+    }
+
+    fn start_model_load(&self, wanted: Option<&str>, raise_notice: bool) -> bool {
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return false;
         }
 
         let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
-        if !reload_pending && self.is_model_loaded() {
+        let load = match wanted {
+            None => reload_pending || !self.is_model_loaded(),
+            Some(model_id) => {
+                let loaded = self.get_current_model().filter(|_| self.is_model_loaded());
+                dictation_override::needs_load(
+                    loaded.as_deref(),
+                    model_id,
+                    reload_pending,
+                    self.job_active(),
+                )
+            }
+        };
+        if !load {
             return false;
         }
 
         *is_loading = true;
         let self_clone = self.clone();
+        let wanted = wanted.map(str::to_string);
         thread::spawn(move || {
             if reload_pending {
                 self_clone
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
-            if let Err(e) = self_clone.load_model(&settings.selected_model) {
-                error!("Failed to load model {}: {}", settings.selected_model, e);
+            let model_id =
+                wanted.unwrap_or_else(|| get_settings(&self_clone.app_handle).selected_model);
+            if let Err(e) = self_clone.load_model(&model_id) {
+                error!("Failed to load model {}: {}", model_id, e);
                 if raise_notice {
-                    self_clone.raise_model_load_failed(&settings.selected_model, &e);
+                    self_clone.raise_model_load_failed(&model_id, &e);
                 }
             }
             let mut is_loading = self_clone.is_loading.lock().unwrap();
@@ -724,6 +755,46 @@ impl TranscriptionManager {
             self_clone.loading_condvar.notify_all();
         });
         true
+    }
+
+    /// Sets (or with `None` clears) the language and model the dictation
+    /// being started records with.
+    pub fn set_recording_override(&self, value: Option<RecordingOverride>) {
+        *self.recording_override.lock().unwrap() = value;
+    }
+
+    /// The settings the dictation in progress runs with: the saved ones,
+    /// with its shortcut's language and model applied. Never written back.
+    pub fn effective_settings(&self) -> AppSettings {
+        let mut settings = get_settings(&self.app_handle);
+        if let Some(o) = self.recording_override.lock().unwrap().as_ref() {
+            o.apply(&mut settings);
+        }
+        settings
+    }
+
+    /// A dictation whose shortcut picks a model must not be decoded by
+    /// another one (e.g. a load for a different model raced its key press):
+    /// load the wanted model now, after any load in progress.
+    fn ensure_override_model(&self) {
+        let wanted = self
+            .recording_override
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|o| o.model.clone());
+        let Some(wanted) = wanted else { return };
+        let loaded = self.get_current_model().filter(|_| self.is_model_loaded());
+        if !dictation_override::needs_load(loaded.as_deref(), &wanted, false, self.job_active()) {
+            return;
+        }
+        let Some(_guard) = self.try_start_loading() else {
+            return;
+        };
+        info!("Swapping in model '{wanted}' for this recording's shortcut");
+        if let Err(e) = self.load_model(&wanted) {
+            error!("Failed to load model {}: {}", wanted, e);
+        }
     }
 
     /// Ends when a model next loads.
@@ -1004,7 +1075,7 @@ impl TranscriptionManager {
             Some(outcome) => outcome,
             None => self.decode_batch(audio)?,
         };
-        let settings = get_settings(&self.app_handle);
+        let settings = self.effective_settings();
         let language = outcome
             .setup
             .spoken_language(outcome.model_detected_language.as_deref());
@@ -1064,11 +1135,12 @@ impl TranscriptionManager {
                 is_loading = self.loading_condvar.wait(is_loading).unwrap();
             }
         }
+        self.ensure_override_model();
         let Some(info) = self.engine.loaded() else {
             return Err(anyhow::anyhow!("Model is not loaded for transcription."));
         };
 
-        let settings = get_settings(&self.app_handle);
+        let settings = self.effective_settings();
         // Validate against the model that's actually loaded (which can differ
         // from settings.selected_model when a caller loaded a specific model —
         // e.g. the --transcribe-file path's --model), not the persisted
@@ -1356,6 +1428,7 @@ fn run_setup(info: &LoadedInfo, settings: &AppSettings, language: LanguageDecisi
         language: run_plan.language,
         target_language: run_plan.target_language,
         vocabulary: vocabulary_for_model(info.supports_vocabulary, &settings.custom_words),
+        pnc: pnc_for_model(info.supports_pnc, settings.auto_format),
         ..Default::default()
     };
 
@@ -1588,6 +1661,16 @@ fn with_model_detected_language(
     }
 }
 
+/// Auto-format turns on the model's own punctuation and capitalization when
+/// it has a runtime toggle; otherwise the model keeps its default.
+fn pnc_for_model(supports_pnc: bool, auto_format: bool) -> Pnc {
+    if supports_pnc && auto_format {
+        Pnc::On
+    } else {
+        Pnc::Default
+    }
+}
+
 /// Custom words for transcribe-cpp's `vocabulary` slot, in priority order.
 /// Empty for models without Feature::Vocabulary, which would warn on every run
 /// and rely on fuzzy correction instead.
@@ -1695,7 +1778,12 @@ fn post_process_transcription_text(
             settings.filler_word_removal_enabled,
         );
 
-        normalize_transcription_output(&without_fillers)
+        let normalized = normalize_transcription_output(&without_fillers);
+        if settings.auto_format {
+            finish_sentence(&normalized)
+        } else {
+            normalized
+        }
     })
 }
 
@@ -2048,6 +2136,7 @@ mod tests {
     fn non_chinese_output_is_never_converted() {
         let settings = AppSettings {
             chinese_script: ChineseScript::TraditionalTw,
+            auto_format: false,
             ..Default::default()
         };
         for evidence in [
@@ -2090,6 +2179,7 @@ mod tests {
         let settings = AppSettings {
             app_language: "en".to_string(),
             selected_language: "pt-BR".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let supported = languages(&["en", "pt"]);
@@ -2136,6 +2226,7 @@ mod tests {
     fn auto_language_without_detection_skips_gated_filler_removal() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let evidence = resolve_output_language_evidence(
@@ -2164,6 +2255,7 @@ mod tests {
     fn unknown_evidence_with_confident_text_detection_removes_gated_fillers() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
 
@@ -2186,6 +2278,7 @@ mod tests {
     fn unknown_evidence_with_portuguese_text_preserves_um() {
         let settings = AppSettings {
             selected_language: "auto".to_string(),
+            auto_format: false,
             ..Default::default()
         };
 
@@ -2269,6 +2362,7 @@ mod tests {
             // Parakeet V3 ignores language hints and auto-detects even when a
             // selection from the previously active model remains persisted.
             selected_language: "en".to_string(),
+            auto_format: false,
             ..Default::default()
         };
         let supported = languages(&["en", "de", "pt"]);
@@ -2358,6 +2452,7 @@ mod tests {
         let settings = AppSettings {
             selected_language: "en".to_string(),
             custom_words: vec!["Handy".to_string()],
+            auto_format: false,
             ..Default::default()
         };
         let evidence = OutputLanguageEvidence::UserSelected("en".to_string());
@@ -2382,6 +2477,38 @@ mod tests {
             &supported,
         );
         assert_eq!(corrected, "i use Handy every day");
+    }
+
+    /// Auto-format (on by default) finishes the final text as a sentence;
+    /// switched off, the text is left as transcribed.
+    #[test]
+    fn auto_format_finishes_the_final_text() {
+        let evidence = OutputLanguageEvidence::UserSelected("en".to_string());
+        let supported = languages(&["en"]);
+        let raw = "so we ship it on thursday".to_string();
+
+        let on = AppSettings::default();
+        assert!(on.auto_format);
+        assert_eq!(
+            post_process_transcription_text(raw.clone(), &on, false, &evidence, &supported),
+            "So we ship it on thursday."
+        );
+
+        let off = AppSettings {
+            auto_format: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            post_process_transcription_text(raw.clone(), &off, false, &evidence, &supported),
+            raw
+        );
+    }
+
+    #[test]
+    fn model_punctuation_is_turned_on_only_where_supported() {
+        assert_eq!(pnc_for_model(true, true), Pnc::On);
+        assert_eq!(pnc_for_model(false, true), Pnc::Default);
+        assert_eq!(pnc_for_model(true, false), Pnc::Default);
     }
 }
 

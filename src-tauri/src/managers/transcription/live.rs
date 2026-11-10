@@ -15,7 +15,7 @@ use super::{
 };
 use crate::audio_toolkit::OutputLanguageEvidence;
 use crate::engine_supervisor::{EngineError, LoadedInfo, StreamHandle, StreamProgress};
-use crate::settings::{get_settings, AppSettings};
+use crate::settings::AppSettings;
 
 /// One recording's live decode.
 pub(super) struct LiveSession<'a> {
@@ -47,7 +47,7 @@ impl<'a> LiveSession<'a> {
         }
         // The same run setup as the batch path: task + language gated
         // against what the model actually advertises.
-        let settings = get_settings(&tm.app_handle);
+        let settings = tm.effective_settings();
         let plan = tm.language_plan(&settings, model_id, info);
         let decoder = match mode {
             LiveDecode::None => unreachable!("returned above"),
