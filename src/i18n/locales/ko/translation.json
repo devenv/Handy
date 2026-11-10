@@ -354,6 +354,18 @@
           "set": "단축키 설정 실패: {{error}}"
         }
       },
+      "languageShortcuts": {
+        "title": "Language Shortcuts",
+        "description": "Extra transcribe shortcuts, each with its own language and model. They apply to that recording only and never change your Language or Model settings. Switching to a different model loads it on the key press.",
+        "add": "Add shortcut",
+        "remove": "Remove shortcut",
+        "recordKey": "Click to record a key",
+        "noKey": "Set key",
+        "sameLanguage": "Language setting",
+        "sameModel": "Selected model",
+        "unsupported": "{{language}} (not supported by this model)",
+        "notDownloaded": "{{model}} (not downloaded)"
+      },
       "language": {
         "title": "언어",
         "description": "음성 인식 언어를 선택하세요. 자동은 언어를 자동으로 감지하며, 특정 언어를 선택하면 해당 언어의 정확도가 향상될 수 있습니다.",

@@ -221,10 +221,12 @@ pub fn change_binding(
         }
     }
 
-    // Unregister the existing binding
-    if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
-        let error_msg = format!("Failed to unregister shortcut: {}", e);
-        error!("change_binding error: {}", error_msg);
+    // Unregister the existing binding (a user-added one may have no key yet)
+    if !binding_to_modify.current_binding.is_empty() {
+        if let Err(e) = unregister_shortcut(&app, binding_to_modify.clone()) {
+            let error_msg = format!("Failed to unregister shortcut: {}", e);
+            error!("change_binding error: {}", error_msg);
+        }
     }
 
     // Validate the new shortcut for the current keyboard implementation
@@ -269,12 +271,94 @@ pub fn change_binding(
 /// Best-effort re-register of the previous binding after a failed change,
 /// so a failure leaves the user's shortcut working exactly as before.
 fn restore_registration(app: &AppHandle, binding: &ShortcutBinding) {
+    // A user-added shortcut recorded for the first time had no key before.
+    if binding.current_binding.is_empty() {
+        return;
+    }
     if let Err(e) = register_shortcut(app, binding.clone()) {
         error!(
             "Failed to restore previous binding '{}' ({}): {}",
             binding.id, binding.current_binding, e
         );
     }
+}
+
+/// Empty strings from the UI's "same as default" choice mean no override.
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Adds a transcribe shortcut with its own language and model. It has no key
+/// yet: the UI records one next, and `change_binding` registers it.
+#[tauri::command]
+#[specta::specta]
+pub fn add_transcribe_shortcut(
+    app: AppHandle,
+    language: Option<String>,
+    model: Option<String>,
+) -> Result<ShortcutBinding, String> {
+    let mut settings = settings::get_settings(&app);
+    let id = settings::next_custom_transcribe_id(&settings.bindings);
+    let binding = ShortcutBinding {
+        id: id.clone(),
+        name: "Transcribe".to_string(),
+        description: "Converts your speech into text in this shortcut's language.".to_string(),
+        default_binding: String::new(),
+        current_binding: String::new(),
+        language: non_empty(language),
+        model: non_empty(model),
+    };
+    settings.bindings.insert(id, binding.clone());
+    settings::write_settings(&app, settings);
+    Ok(binding)
+}
+
+/// Sets the language and model a user-added transcribe shortcut records
+/// with. `None` (or empty) follows the global selection.
+#[tauri::command]
+#[specta::specta]
+pub fn change_transcribe_shortcut_profile(
+    app: AppHandle,
+    id: String,
+    language: Option<String>,
+    model: Option<String>,
+) -> Result<ShortcutBinding, String> {
+    if !settings::is_custom_transcribe_binding(&id) {
+        return Err(format!("'{id}' is not an added transcribe shortcut"));
+    }
+    let mut settings = settings::get_settings(&app);
+    let binding = settings
+        .bindings
+        .get_mut(&id)
+        .ok_or_else(|| format!("Binding with id '{}' not found", id))?;
+    binding.language = non_empty(language);
+    binding.model = non_empty(model);
+    let updated = binding.clone();
+    settings::write_settings(&app, settings);
+    Ok(updated)
+}
+
+/// Removes a user-added transcribe shortcut and frees its key. The built-in
+/// shortcuts can't be removed.
+#[tauri::command]
+#[specta::specta]
+pub fn remove_transcribe_shortcut(app: AppHandle, id: String) -> Result<(), String> {
+    if !settings::is_custom_transcribe_binding(&id) {
+        return Err(format!("'{id}' is not an added transcribe shortcut"));
+    }
+    let mut settings = settings::get_settings(&app);
+    if let Some(binding) = settings.bindings.remove(&id) {
+        if !binding.current_binding.is_empty() {
+            if let Err(e) = unregister_shortcut(&app, binding) {
+                warn!("remove_transcribe_shortcut: could not unregister '{id}': {e}");
+            }
+        }
+    }
+    settings::write_settings(&app, settings);
+    crate::secure_input::reconcile_fallback(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -290,7 +374,7 @@ pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, Stri
 /// by the recording lifecycle.
 pub fn suspend_all_shortcuts(app: &AppHandle) {
     for (id, binding) in settings::get_bindings(app) {
-        if id == "cancel" {
+        if id == "cancel" || binding.current_binding.is_empty() {
             continue;
         }
         if let Err(e) = unregister_shortcut(app, binding) {
@@ -307,14 +391,9 @@ pub fn suspend_all_shortcuts(app: &AppHandle) {
 /// implementations, so this is idempotent and safe on every exit path.
 pub fn resume_all_shortcuts(app: &AppHandle) {
     let settings = get_settings(app);
-    for (id, binding) in &settings.bindings {
-        if id == "cancel" {
-            continue;
-        }
-        if id == "transcribe_with_post_process" && !settings.post_process_enabled {
-            continue;
-        }
-        if let Err(e) = register_shortcut(app, binding.clone()) {
+    for binding in settings::startup_bindings(&settings) {
+        let id = binding.id.clone();
+        if let Err(e) = register_shortcut(app, binding) {
             debug!("resume_all_shortcuts: could not register '{}': {}", id, e);
         }
     }
@@ -471,8 +550,9 @@ fn unregister_all_shortcuts(app: &AppHandle, implementation: KeyboardImplementat
     let bindings = settings::get_bindings(app);
 
     for (id, binding) in bindings {
-        // Skip cancel shortcut as it's dynamically registered
-        if id == "cancel" {
+        // Skip cancel shortcut as it's dynamically registered, and a
+        // user-added shortcut that has no key yet
+        if id == "cancel" || binding.current_binding.is_empty() {
             continue;
         }
 
@@ -497,25 +577,10 @@ fn register_all_shortcuts_for_implementation(
     implementation: KeyboardImplementation,
 ) -> Vec<String> {
     let mut reset_bindings = Vec::new();
-    let default_bindings = settings::get_default_settings().bindings;
     let mut current_settings = settings::get_settings(app);
 
-    for (id, default_binding) in &default_bindings {
-        // Skip cancel shortcut as it's dynamically registered
-        if id == "cancel" {
-            continue;
-        }
-
-        // Skip post-processing shortcut when the feature is disabled
-        if id == "transcribe_with_post_process" && !current_settings.post_process_enabled {
-            continue;
-        }
-
-        let mut binding = current_settings
-            .bindings
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| default_binding.clone());
+    for mut binding in settings::startup_bindings(&current_settings) {
+        let id = binding.id.clone();
 
         // Validate the shortcut for the target implementation
         if let Err(e) =
@@ -526,12 +591,16 @@ fn register_all_shortcuts_for_implementation(
                 id, binding.current_binding, implementation, e
             );
 
-            // Reset to default
-            binding.current_binding = default_binding.current_binding.clone();
+            // Reset to default. A user-added shortcut has none, so it is left
+            // without a key (unregistered) until the user records a new one.
+            binding.current_binding = binding.default_binding.clone();
             current_settings
                 .bindings
                 .insert(id.clone(), binding.clone());
             reset_bindings.push(id.clone());
+            if binding.current_binding.is_empty() {
+                continue;
+            }
         }
 
         // Register with the appropriate implementation

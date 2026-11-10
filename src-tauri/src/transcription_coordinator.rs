@@ -1,4 +1,4 @@
-use crate::actions::ACTION_MAP;
+use crate::actions::action_for_binding;
 use crate::managers::audio::AudioRecordingManager;
 use crate::settings::ShortcutActivation;
 use log::{debug, error, warn};
@@ -569,7 +569,9 @@ pub struct TranscriptionCoordinator {
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
-    id == "transcribe" || id == "transcribe_with_post_process"
+    id == "transcribe"
+        || id == "transcribe_with_post_process"
+        || crate::settings::is_custom_transcribe_binding(id)
 }
 
 impl TranscriptionCoordinator {
@@ -743,7 +745,7 @@ fn run_effect(app: &AppHandle, state: &mut CoordinatorState, effect: Effect) {
 /// Execute a start effect; returns whether recording actually began, so the
 /// state machine can roll back its optimistic transition on failure.
 fn start(app: &AppHandle, binding_id: &str, hotkey_string: &str) -> bool {
-    let Some(action) = ACTION_MAP.get(binding_id) else {
+    let Some(action) = action_for_binding(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
         return false;
     };
@@ -758,7 +760,7 @@ fn start(app: &AppHandle, binding_id: &str, hotkey_string: &str) -> bool {
 }
 
 fn stop(app: &AppHandle, binding_id: &str, hotkey_string: &str) {
-    let Some(action) = ACTION_MAP.get(binding_id) else {
+    let Some(action) = action_for_binding(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
         return;
     };
@@ -1208,6 +1210,106 @@ mod tests {
         match state.on_processing_finished() {
             Some(Effect::Start { binding_id, .. }) => assert_eq!(binding_id, BINDING),
             other => panic!("expected Start for '{BINDING}', got {other:?}"),
+        }
+    }
+
+    const LANG_BINDING: &str = "transcribe_lang_1";
+
+    /// User-added shortcuts are transcribe bindings by their id prefix; the
+    /// prefix alone, or a look-alike id, is not.
+    #[test]
+    fn custom_language_bindings_route_as_transcribe() {
+        for id in [
+            "transcribe",
+            OTHER_BINDING,
+            LANG_BINDING,
+            "transcribe_lang_12",
+        ] {
+            assert!(
+                is_transcribe_binding(id),
+                "{id} should be a transcribe binding"
+            );
+        }
+        for id in [
+            "transcribe_lang_",
+            "transcribe_language",
+            "cancel",
+            "test",
+            "",
+        ] {
+            assert!(
+                !is_transcribe_binding(id),
+                "{id} must not be a transcribe binding"
+            );
+        }
+    }
+
+    /// A user-added shortcut runs the plain transcribe action (no
+    /// post-processing); unknown ids run nothing.
+    #[test]
+    fn custom_language_bindings_run_the_transcribe_action() {
+        let transcribe = crate::actions::ACTION_MAP.get("transcribe").unwrap();
+        let routed = action_for_binding(LANG_BINDING).expect("custom id has an action");
+        assert!(Arc::ptr_eq(transcribe, &routed));
+        assert!(action_for_binding("transcribe_lang_").is_none());
+        assert!(action_for_binding("nope").is_none());
+    }
+
+    /// Every activation path works the same for a user-added shortcut as for
+    /// the built-in one: each starts and stops under its own id.
+    #[test]
+    fn each_transcribe_binding_starts_and_stops_under_its_own_id() {
+        for id in [BINDING, LANG_BINDING] {
+            let mut state = CoordinatorState::new();
+            let now = Instant::now();
+            match state.on_input(toggle_input_for(id, false), now) {
+                Some(Effect::Start { binding_id, .. }) => assert_eq!(binding_id, id),
+                other => panic!("expected Start for '{id}', got {other:?}"),
+            }
+            match state.on_input(toggle_input_for(id, false), now + Duration::from_secs(1)) {
+                Some(Effect::Stop { binding_id, .. }) => assert_eq!(binding_id, id),
+                other => panic!("expected Stop for '{id}', got {other:?}"),
+            }
+        }
+    }
+
+    /// While one language's shortcut records, another language's press is
+    /// ignored rather than stopping it under the wrong id.
+    #[test]
+    fn other_language_press_does_not_stop_the_recording() {
+        let mut state = CoordinatorState::new();
+        let now = Instant::now();
+        let at = |ms| now + Duration::from_millis(ms);
+        assert!(matches!(
+            state.on_input(toggle_input_for(LANG_BINDING, false), now),
+            Some(Effect::Start { .. })
+        ));
+        assert!(state
+            .on_input(toggle_input_for(BINDING, false), at(500))
+            .is_none());
+        assert_eq!(state.stage, Stage::Recording(LANG_BINDING.to_string()));
+        match state.on_input(toggle_input_for(LANG_BINDING, false), at(1000)) {
+            Some(Effect::Stop { binding_id, .. }) => assert_eq!(binding_id, LANG_BINDING),
+            other => panic!("expected Stop for '{LANG_BINDING}', got {other:?}"),
+        }
+    }
+
+    /// A language shortcut pressed while the previous dictation is still
+    /// transcribing starts its own recording once that finishes.
+    #[test]
+    fn drain_starts_a_pending_language_binding() {
+        let mut state = CoordinatorState::new();
+        let now = Instant::now();
+        drive_into_processing(&mut state, now);
+        assert!(state
+            .on_input(
+                toggle_input_for(LANG_BINDING, true),
+                now + Duration::from_millis(200)
+            )
+            .is_none());
+        match state.on_processing_finished() {
+            Some(Effect::Start { binding_id, .. }) => assert_eq!(binding_id, LANG_BINDING),
+            other => panic!("expected Start for '{LANG_BINDING}', got {other:?}"),
         }
     }
 

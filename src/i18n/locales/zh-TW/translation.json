@@ -354,6 +354,18 @@
           "set": "無法設定快捷鍵: {{error}}"
         }
       },
+      "languageShortcuts": {
+        "title": "Language Shortcuts",
+        "description": "Extra transcribe shortcuts, each with its own language and model. They apply to that recording only and never change your Language or Model settings. Switching to a different model loads it on the key press.",
+        "add": "Add shortcut",
+        "remove": "Remove shortcut",
+        "recordKey": "Click to record a key",
+        "noKey": "Set key",
+        "sameLanguage": "Language setting",
+        "sameModel": "Selected model",
+        "unsupported": "{{language}} (not supported by this model)",
+        "notDownloaded": "{{model}} (not downloaded)"
+      },
       "language": {
         "title": "語言",
         "description": "選擇語音辨識的語言。選擇自動將自動判定語言，選擇特定語言可以提高該語言的準確度",

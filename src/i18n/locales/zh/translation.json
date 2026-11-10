@@ -354,6 +354,18 @@
           "set": "无法设置快捷键: {{error}}"
         }
       },
+      "languageShortcuts": {
+        "title": "Language Shortcuts",
+        "description": "Extra transcribe shortcuts, each with its own language and model. They apply to that recording only and never change your Language or Model settings. Switching to a different model loads it on the key press.",
+        "add": "Add shortcut",
+        "remove": "Remove shortcut",
+        "recordKey": "Click to record a key",
+        "noKey": "Set key",
+        "sameLanguage": "Language setting",
+        "sameModel": "Selected model",
+        "unsupported": "{{language}} (not supported by this model)",
+        "notDownloaded": "{{model}} (not downloaded)"
+      },
       "language": {
         "title": "语言",
         "description": "选择语音识别的语言。自动将自动确定语言，选择特定语言可以提高该语言的准确度。",

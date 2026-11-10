@@ -354,6 +354,18 @@
           "set": "ショートカットを設定できませんでした: {{error}}"
         }
       },
+      "languageShortcuts": {
+        "title": "Language Shortcuts",
+        "description": "Extra transcribe shortcuts, each with its own language and model. They apply to that recording only and never change your Language or Model settings. Switching to a different model loads it on the key press.",
+        "add": "Add shortcut",
+        "remove": "Remove shortcut",
+        "recordKey": "Click to record a key",
+        "noKey": "Set key",
+        "sameLanguage": "Language setting",
+        "sameModel": "Selected model",
+        "unsupported": "{{language}} (not supported by this model)",
+        "notDownloaded": "{{model}} (not downloaded)"
+      },
       "language": {
         "title": "言語",
         "description": "音声認識の言語を選択してください。自動を選択すると言語を自動的に判定します。特定の言語を選択すると、その言語の精度が向上する場合があります。",

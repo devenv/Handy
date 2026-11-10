@@ -483,6 +483,10 @@ mod imp {
                 if id == "transcribe_with_post_process" && !settings.post_process_enabled {
                     continue;
                 }
+                // A user-added shortcut has no key until one is recorded.
+                if binding.current_binding.is_empty() {
+                    continue;
+                }
 
                 match plan_fallback_binding(id, binding) {
                     ShadowPlan::Immune => immune += 1,

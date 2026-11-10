@@ -85,6 +85,56 @@ pub struct ShortcutBinding {
     pub description: String,
     pub default_binding: String,
     pub current_binding: String,
+    /// Language this shortcut dictates in, for this recording only. `None`
+    /// follows `selected_language`; it never changes the saved selection.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Model this shortcut transcribes with, for this recording only. `None`
+    /// follows `selected_model`.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Id prefix of the transcribe shortcuts the user adds (one per language or
+/// model). They run the plain transcribe action with their own overrides.
+pub const CUSTOM_TRANSCRIBE_PREFIX: &str = "transcribe_lang_";
+
+/// Whether `id` is a user-added transcribe shortcut.
+pub fn is_custom_transcribe_binding(id: &str) -> bool {
+    id.strip_prefix(CUSTOM_TRANSCRIBE_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+/// The first free id for a new user-added transcribe shortcut.
+pub fn next_custom_transcribe_id(bindings: &HashMap<String, ShortcutBinding>) -> String {
+    (1..)
+        .map(|n| format!("{CUSTOM_TRANSCRIBE_PREFIX}{n}"))
+        .find(|id| !bindings.contains_key(id))
+        .expect("an unbounded range always has a free id")
+}
+
+/// Every binding to register at launch and after an implementation switch:
+/// the built-in ones (customised or default) plus the user-added transcribe
+/// shortcuts that have a key. Cancel is registered per recording, and the
+/// post-processing shortcut only while that feature is on. Sorted by id so
+/// registration order is stable.
+pub fn startup_bindings(settings: &AppSettings) -> Vec<ShortcutBinding> {
+    let defaults = get_default_settings().bindings;
+    let mut out: Vec<ShortcutBinding> = defaults
+        .into_iter()
+        .filter(|(id, _)| id != "cancel")
+        .filter(|(id, _)| id != "transcribe_with_post_process" || settings.post_process_enabled)
+        .map(|(id, default)| settings.bindings.get(&id).cloned().unwrap_or(default))
+        .collect();
+    out.extend(
+        settings
+            .bindings
+            .iter()
+            .filter(|(id, b)| is_custom_transcribe_binding(id) && !b.current_binding.is_empty())
+            .map(|(_, b)| b.clone()),
+    );
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -966,6 +1016,8 @@ pub fn get_default_settings() -> AppSettings {
             description: "Converts your speech into text.".to_string(),
             default_binding: default_shortcut.to_string(),
             current_binding: default_shortcut.to_string(),
+            language: None,
+            model: None,
         },
     );
     #[cfg(target_os = "windows")]
@@ -986,6 +1038,8 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+            language: None,
+            model: None,
         },
     );
     bindings.insert(
@@ -996,6 +1050,8 @@ pub fn get_default_settings() -> AppSettings {
             description: "Cancels the current recording.".to_string(),
             default_binding: "escape".to_string(),
             current_binding: "escape".to_string(),
+            language: None,
+            model: None,
         },
     );
 
@@ -1433,6 +1489,103 @@ pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn custom(id: &str, key: &str) -> ShortcutBinding {
+        ShortcutBinding {
+            id: id.to_string(),
+            name: "Transcribe".to_string(),
+            description: String::new(),
+            default_binding: String::new(),
+            current_binding: key.to_string(),
+            language: Some("ru".to_string()),
+            model: Some("whisper-large-v3-turbo".to_string()),
+        }
+    }
+
+    #[test]
+    fn custom_transcribe_ids_fill_the_first_free_slot() {
+        let mut settings = get_default_settings();
+        assert_eq!(
+            next_custom_transcribe_id(&settings.bindings),
+            "transcribe_lang_1"
+        );
+        for id in ["transcribe_lang_1", "transcribe_lang_3"] {
+            settings.bindings.insert(id.to_string(), custom(id, "f13"));
+        }
+        assert_eq!(
+            next_custom_transcribe_id(&settings.bindings),
+            "transcribe_lang_2"
+        );
+        assert!(is_custom_transcribe_binding("transcribe_lang_2"));
+        assert!(!is_custom_transcribe_binding("transcribe"));
+        assert!(!is_custom_transcribe_binding("transcribe_lang_"));
+    }
+
+    /// Launch used to register only the built-in bindings, so an added
+    /// shortcut stopped working after a restart.
+    #[test]
+    fn startup_registers_added_shortcuts_with_a_key() {
+        let mut settings = get_default_settings();
+        settings.post_process_enabled = false;
+        settings.bindings.insert(
+            "transcribe_lang_1".to_string(),
+            custom("transcribe_lang_1", "ctrl+option+r"),
+        );
+        settings.bindings.insert(
+            "transcribe_lang_2".to_string(),
+            custom("transcribe_lang_2", ""),
+        );
+
+        let ids: Vec<String> = startup_bindings(&settings)
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, vec!["transcribe", "transcribe_lang_1"]);
+
+        settings.post_process_enabled = true;
+        let ids: Vec<String> = startup_bindings(&settings)
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "transcribe",
+                "transcribe_lang_1",
+                "transcribe_with_post_process"
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_uses_the_users_key_for_builtin_bindings() {
+        let mut settings = get_default_settings();
+        settings
+            .bindings
+            .get_mut("transcribe")
+            .unwrap()
+            .current_binding = "f13".to_string();
+        let transcribe = startup_bindings(&settings)
+            .into_iter()
+            .find(|b| b.id == "transcribe")
+            .unwrap();
+        assert_eq!(transcribe.current_binding, "f13");
+    }
+
+    /// Stores written before per-shortcut languages existed still load.
+    #[test]
+    fn bindings_without_language_or_model_still_parse() {
+        let raw = serde_json::json!({
+            "id": "transcribe",
+            "name": "Transcribe",
+            "description": "d",
+            "default_binding": "option+space",
+            "current_binding": "option+space"
+        });
+        let binding: ShortcutBinding = serde_json::from_value(raw).unwrap();
+        assert_eq!(binding.language, None);
+        assert_eq!(binding.model, None);
+    }
 
     #[test]
     fn stored_binding_returns_the_requested_binding() {
