@@ -55,6 +55,7 @@ jobs:
   build:
     permissions:
       contents: write
+    environment: ${{ inputs.release-id && 'updater-release' || 'ci-build' }}
     runs-on: ${{ inputs.platform }}
     steps:
       # Kept for git checkout and general tooling headroom. The native
@@ -446,6 +447,11 @@ jobs:
           chmod +x "$tools_dir/linuxdeploy-${arch}.AppImage"
           "$tools_dir/linuxdeploy-${arch}.AppImage" --appimage-extract-and-run --version
 
+      - name: Skip updater signatures for development builds
+        if: inputs.release-id == ''
+        shell: bash
+        run: bun -e 'const fs = require("node:fs"); const path = "src-tauri/tauri.conf.json"; const config = JSON.parse(fs.readFileSync(path)); config.bundle.createUpdaterArtifacts = false; fs.writeFileSync(path, JSON.stringify(config));'
+
       - name: Build with Tauri
         uses: tauri-apps/tauri-action@v0
         env:
@@ -460,8 +466,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ inputs.sign-binaries && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ inputs.sign-binaries && secrets.AZURE_CLIENT_SECRET || '' }}
           AZURE_TENANT_ID: ${{ inputs.sign-binaries && secrets.AZURE_TENANT_ID || '' }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.sign-binaries && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.sign-binaries && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.release-id && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.release-id && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           # The Vulkan loader and Wayland client library must come from the host
           # graphics stack. Bundling Ubuntu's copies ahead of the system libraries can
           # prevent a newer distro's Vulkan ICD or Mesa stack from loading.

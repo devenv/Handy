@@ -1,0 +1,26 @@
+name: Check upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 7 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for upstream commits missing from the fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          range="main...cjpais:Handy:main"
+          count=$(gh api "repos/$GITHUB_REPOSITORY/compare/$range" --jq .ahead_by)
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$range"
+          echo "Upstream has $count commit(s) to merge. [Compare branches]($url)." >> "$GITHUB_STEP_SUMMARY"
+          if (( count > 0 )); then
+            echo "::error::Upstream has $count new commit(s) to merge. $url"
+            exit 1
+          fi

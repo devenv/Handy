@@ -243,24 +243,10 @@ Artifacts then land in `C:\h\release\...` instead of the repo's
 it is only picked up by freshly started processes. Then `bun run tauri dev`
 and `bun run tauri build` work normally.
 
-### Windows `tauri build` fails at bundling with `program not found`
+### Publishing updates from this fork
 
-If the build compiles all the way to `Built application at: ...\handy.exe` and
-then fails with:
+The Release workflow builds a draft from a specific commit on main. For each release, set a higher application version in the Tauri, Cargo and frontend manifests, update Cargo.lock, then dispatch **Release**. After the build and package audits succeed, check that `latest.json` contains the supported targets and points to this fork’s signed assets. Publish the draft as the latest stable release to make it available in Handy.
 
-```
-Signing C:\...\handy.exe with a custom signing command
-failed to bundle project `program not found`
-```
+Updater signatures use the public key in `src-tauri/tauri.conf.json`. Store the matching `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the GitHub Actions environment `updater-release`, restricted to the main branch. Keep a backup of the key for future releases. The fork does not use upstream’s Apple Developer ID or Windows Authenticode identity.
 
-that's the code-signing step: `tauri.conf.json` configures a custom
-`signCommand` (`trusted-signing-cli`, Azure Trusted Signing) that only exists
-in the release CI environment. Local development doesn't need it:
-
-```powershell
-# Development (no bundling/signing at all):
-bun run tauri dev
-
-# Or compile a release binary without the installer/signing step:
-bun run tauri build --no-bundle
-```
+For a local executable without creating installer bundles, run `bun run tauri build --no-bundle`.
