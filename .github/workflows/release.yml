@@ -28,11 +28,22 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
+            const tag = `v${{ steps.get-version.outputs.version }}`
+            const { data: releases } = await github.rest.repos.listReleases({
+              ...context.repo, per_page: 100
+            })
+            const existing = releases.find(release => release.tag_name === tag)
+            if (existing) {
+              if (!existing.draft || existing.target_commitish !== context.sha) {
+                throw new Error(`${tag} already belongs to a different commit or published release`)
+              }
+              return existing.id
+            }
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: `v${{ steps.get-version.outputs.version }}`,
-              name: `v${{ steps.get-version.outputs.version }}`,
+              tag_name: tag,
+              name: tag,
               target_commitish: context.sha,
               draft: true,
               prerelease: false,
@@ -51,7 +62,7 @@ jobs:
           - platform: "macos-26" # for Arm based macs (M1 and above). Uses macOS 26 for Apple Intelligence SDK.
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
-          - platform: "macos-latest" # for Intel based macs.
+          - platform: "macos-26-intel" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
           - platform: "ubuntu-22.04" # Build .deb on 22.04
@@ -82,3 +93,4 @@ jobs:
       # Releases always build from scratch — never restore the Rust cache, so a
       # stale cached native lib can never be linked into a shipped artifact.
       no-cache: true
+    secrets: inherit

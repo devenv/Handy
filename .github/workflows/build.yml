@@ -58,6 +58,17 @@ jobs:
     environment: ${{ inputs.release-id && 'updater-release' || 'ci-build' }}
     runs-on: ${{ inputs.platform }}
     steps:
+      - name: Check release signing credentials
+        if: inputs.release-id != ''
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
+        shell: bash
+        run: |
+          if [[ "$HAS_SIGNING_KEY" != "true" ]]; then
+            echo "::error::The release job needs the updater-release environment's signing credentials."
+            exit 1
+          fi
+
       # Kept for git checkout and general tooling headroom. The native
       # transcribe-cpp-sys build no longer needs path help: since 0.1.3 its
       # build.rs self-mitigates MAX_PATH by compiling through a short NTFS
